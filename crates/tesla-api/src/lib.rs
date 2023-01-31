@@ -5,7 +5,7 @@ use rand::distributions::{Alphanumeric, DistString};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::Write;
 
 #[derive(Debug, Display, From)]
 pub enum ApiError {
@@ -14,6 +14,8 @@ pub enum ApiError {
     Unauthorized,
     VehicleUnavailable,
     StreamWebSocketClosed,
+    InvalidEmail,
+    InvalidPassword,
 }
 impl std::error::Error for ApiError {}
 
@@ -298,18 +300,11 @@ impl ApiClient {
         email: &str,
         password: &str,
     ) -> Result<AccessTokenResponse, ApiError> {
-        let mut email = email.to_string();
-        let mut password = password.to_string();
-        if email == "" || password == "" {
-            let f = std::fs::File::open(".cache/pass.txt");
-            if let Ok(file) = f {
-                let lines = std::io::BufReader::new(file)
-                    .lines()
-                    .map(|l| l.unwrap())
-                    .collect_vec();
-                email = lines[0].clone();
-                password = lines[1].clone();
-            }
+        if email.is_empty() {
+            return Err(ApiError::InvalidEmail);
+        }
+        if password.is_empty() {
+            return Err(ApiError::InvalidPassword);
         }
         let url = "https://auth.tesla.cn/oauth2/v3/authorize";
         let code_verifier = Alphanumeric.sample_string(&mut rand::thread_rng(), 86);
@@ -384,7 +379,7 @@ impl ApiClient {
         params.insert("identity", email);
         params.insert("credential", password);
         for it in &input_tags {
-            params.insert(it.0, it.1.to_string());
+            params.insert(it.0, it.1);
         }
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -691,7 +686,7 @@ impl ApiClient {
                         info!("receive msg={:?}", msg.into_text());
                     }
                 }
-                Err(e) => {
+                Err(_e) => {
                     return Err(ApiError::StreamWebSocketClosed);
                 }
             }

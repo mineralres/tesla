@@ -1,6 +1,8 @@
+use clap::Parser;
+use itertools::Itertools;
 use log::{error, info};
+use std::io::BufRead;
 use tesla_api::{ApiClient, ApiError, VehicleData};
-
 mod http;
 use http::*;
 
@@ -11,9 +13,39 @@ fn init_logger() {
     tracing_subscriber::fmt::init();
 }
 
+#[derive(Parser)]
+#[clap()]
+struct Opts {
+    #[clap(short, long, default_value = "")]
+    email: String,
+    #[clap(short, long, default_value = "")]
+    password: String,
+}
+
 #[tokio::main]
 async fn main() {
     init_logger();
+    let opts: Opts = Opts::parse();
+    let mut email = opts.email.clone();
+    let mut password = opts.password.clone();
+    if email == "" || password == "" {
+        let f = std::fs::File::open(".cache/pass.txt");
+        match f {
+            Ok(f) => {
+                let lines = std::io::BufReader::new(f)
+                    .lines()
+                    .map(|l| l.unwrap())
+                    .collect_vec();
+                email = lines[0].clone();
+                password = lines[1].clone();
+            }
+            Err(e) => error!("{}", e),
+        }
+    }
+    if email == "" || password == "" {
+        panic!("Please set email & password in .cache/pass.txt first!");
+    }
+
     check_make_dir(".cache");
     check_make_dir(".cache/logs");
     tokio::spawn(async {
@@ -34,7 +66,7 @@ async fn main() {
             ApiError::Unauthorized => {
                 info!("Get new access token");
                 let _result = client
-                    .get_token("", "")
+                    .get_token(&email, &password)
                     .await
                     .expect("Failed to get new access_token");
             }
@@ -61,7 +93,7 @@ async fn main() {
                     ApiError::Unauthorized => {
                         info!("Stream unauthorized, get new access token");
                         let _result = client
-                            .get_token("", "")
+                            .get_token(&email, &password)
                             .await
                             .expect("Failed to get new access_token");
                     }

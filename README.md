@@ -9,6 +9,11 @@ npm run build
 ```
 
 ### run
+```
+./target/release/maind -e your_email@xx.xx -p yourpassword
+```
+or
+
 create new file in .cache/pass.txt, firstl line is your email, second line is your password
 then
 ```
@@ -16,5 +21,6 @@ then
 ```
 
 ### 说明
-1. 账号和密码放在.cache/pass.txt里面，第一行是账号，第二行是密码. (如果没有.cache目录请先手动创建)
-2. 登陆时会查询账户下的车子列表, 目前只订阅第一个车的推送数据.
+1. 可以在运行后端程序时直接传入账号和密码，或者把账号和密码放在.cache/pass.txt里面，第一行是账号，第二行是密码. (如果没有.cache目录请先手动创建)
+2. tesla现在的access_token是8个小时有效期，过期后会重新申请token.
+3. 登陆时会查询账户下的车子列表, 目前只订阅第一个车的推送数据.
