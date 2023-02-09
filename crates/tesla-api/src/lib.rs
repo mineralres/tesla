@@ -1,6 +1,8 @@
 use derive_more::{Display, From};
 use itertools::Itertools;
 use log::{error, info};
+use pb::tesla::Vehicle;
+use pb::tesla::*;
 use rand::distributions::{Alphanumeric, DistString};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -13,28 +15,11 @@ pub enum ApiError {
     EmptyTeslaAuthSid,
     Unauthorized,
     VehicleUnavailable,
+    VehicleOffline,
     StreamWebSocketClosed,
     InvalidEmail,
     InvalidPassword,
-}
-impl std::error::Error for ApiError {}
-
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct StreamDataUpdate {
-    pub timestamp: i64,
-    pub milliseconds: i64,
-    pub speed: f64,
-    pub odometer: f64,
-    pub soc: f64,
-    pub elevation: f64,
-    pub est_heading: f64,
-    pub est_lat: f64,
-    pub est_lng: f64,
-    pub power: f64,
-    pub shift_state: String,
-    pub range: f64,
-    pub est_range: f64,
-    pub heading: f64,
+    LocalChannelClosed,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -42,7 +27,7 @@ pub struct AccessTokenResponse {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_in: i64,
-    pub state: String,
+    pub state: Option<String>,
     pub token_type: String,
     pub create_timestamp: Option<i64>,
 }
@@ -54,230 +39,30 @@ pub struct UsersMeResponse {
     pub profile_image_url: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Vehicle {
-    pub id: i64,
-    pub vehicle_id: i64,
-    pub vin: String,
-    pub display_name: String,
-    pub option_codes: String,
-    pub tokens: Vec<String>,
-    pub state: String,
-    pub in_service: bool,
-    pub id_s: String,
-    pub calendar_enabled: bool,
-    pub api_version: i64,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct VehicleDriveState {
-    pub gps_as_of: i64,
-    pub heading: i64,
-    pub latitude: f64,
-    pub longitude: f64,
-    pub native_latitude: f64,
-    pub native_location_supported: i64,
-    pub native_longitude: f64,
-    pub native_type: String,
-    pub power: i64,
-    pub timestamp: i64,
-}
-#[derive(Debug, Deserialize, Serialize)]
-pub struct VehicleClimateState {
-    pub battery_heater: bool,
-    // pub battery_heater_no_power: null,
-    pub climate_keeper_mode: String,
-    pub defrost_mode: i64,
-    pub driver_temp_setting: f64,
-    pub fan_status: i64,
-    pub inside_temp: f64,
-    pub is_auto_conditioning_on: bool,
-    pub is_climate_on: bool,
-    pub is_front_defroster_on: bool,
-    pub is_preconditioning: bool,
-    pub is_rear_defroster_on: bool,
-    pub left_temp_direction: f64,
-    pub max_avail_temp: f64,
-    pub min_avail_temp: f64,
-    pub outside_temp: f64,
-    pub passenger_temp_setting: f64,
-    pub remote_heater_control_enabled: bool,
-    pub right_temp_direction: f64,
-    pub seat_heater_left: i32,
-    pub seat_heater_right: i32,
-    pub side_mirror_heaters: bool,
-    pub timestamp: i64,
-    pub wiper_blade_heater: bool,
-}
-#[derive(Debug, Deserialize, Serialize)]
-pub struct VehicleChargeState {
-    pub battery_heater_on: bool,
-    pub battery_level: i64,
-    pub battery_range: f64,
-    pub charge_current_request: f64,
-    pub charge_current_request_max: f64,
-    pub charge_enable_request: bool,
-    pub charge_energy_added: f64,
-    pub charge_limit_soc: f64,
-    pub charge_limit_soc_max: f64,
-    pub charge_limit_soc_min: f64,
-    pub charge_limit_soc_std: f64,
-    pub charge_miles_added_ideal: f64,
-    pub charge_miles_added_rated: f64,
-    // pub charge_port_cold_weather_mode: null,
-    pub charge_port_door_open: bool,
-    pub charge_port_latch: String,
-    pub charge_rate: f64,
-    // pub charge_to_max_range: bool,
-    pub charger_actual_current: f64,
-    // pub charger_phases: null,
-    pub charger_power: f64,
-    pub charger_voltage: f64,
-    pub charging_state: String,
-    pub conn_charge_cable: String,
-    pub est_battery_range: f64,
-    pub fast_charger_brand: String,
-    pub fast_charger_present: bool,
-    pub fast_charger_type: String,
-    pub ideal_battery_range: f64,
-    pub managed_charging_active: bool,
-    // pub managed_charging_start_time: null,
-    pub managed_charging_user_canceled: bool,
-    pub max_range_charge_counter: i64,
-    pub minutes_to_full_charge: f64,
-    // pub not_enough_power_to_heat: null,
-    pub scheduled_charging_pending: bool,
-    // pub scheduled_charging_start_time: null,
-    pub time_to_full_charge: f64,
-    pub timestamp: i64,
-    pub trip_charging: bool,
-    pub usable_battery_level: f64,
-    // pub user_charge_enable_request: null,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct VehicleGuiSettings {
-    pub gui_24_hour_time: bool,
-    pub gui_charge_rate_units: String,
-    pub gui_distance_units: String,
-    pub gui_range_display: String,
-    pub gui_temperature_units: String,
-    pub show_range_units: bool,
-    pub timestamp: i64,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct VehicleState {
-    pub api_version: i64,
-    pub autopark_state_v2: String,
-    // pub autopark_style: String,
-    pub calendar_supported: bool,
-    pub car_version: String,
-    pub center_display_state: i64,
-    pub df: i64,
-    pub dr: i64,
-    pub fd_window: i64,
-    pub fp_window: i64,
-    pub ft: i64,
-    // pub homelink_device_count: i64,
-    // pub homelink_nearby: bool,
-    pub is_user_present: bool,
-    // pub last_autopark_error: String,
-    pub locked: bool,
-    //   media_state: { "remote_control_enabled": true },
-    pub notifications_supported: bool,
-    pub odometer: f64,
-    pub parsed_calendar_supported: bool,
-    pub pf: i64,
-    pub pr: i64,
-    pub rd_window: i64,
-    pub remote_start: bool,
-    pub remote_start_enabled: bool,
-    pub remote_start_supported: bool,
-    pub rp_window: i64,
-    pub rt: i64,
-    pub sentry_mode: bool,
-    pub sentry_mode_available: bool,
-    // pub smart_summon_available: bool,
-    //   software_update: {
-    //     "download_perc": 0,
-    //     "expected_duration_sec": 2700,
-    //     "install_perc": 1,
-    //     "status": ,
-    //     "version": "
-    //   },
-    //   "speed_limit_mode": {
-    //     "active": false,
-    //     "current_limit_mph": 85.0,
-    //     "max_limit_mph": 90,
-    //     "min_limit_mph": 50,
-    //     "pin_code_set": false
-    //   },
-    // pub summon_standby_mode_enabled: bool,
-    // pub sun_roof_percent_open: i64,
-    // pub sun_roof_state: String,
-    pub timestamp: i64,
-    pub valet_mode: bool,
-    pub valet_pin_needed: bool,
-    //   vehicle_name": null
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct VehicleConfig {
-    pub can_accept_navigation_requests: bool,
-    pub can_actuate_trunks: bool,
-    pub car_special_type: String,
-    pub car_type: String,
-    pub charge_port_type: String,
-    pub default_charge_to_max: bool,
-    pub ece_restrictions: bool,
-    pub eu_vehicle: bool,
-    pub exterior_color: String,
-    pub has_air_suspension: bool,
-    pub has_ludicrous_mode: bool,
-    pub motorized_charge_port: bool,
-    pub plg: bool,
-    pub rear_seat_heaters: i64,
-    pub rear_seat_type: i64,
-    pub rhd: bool,
-    // pub roof_color: None,
-    // pub seat_type: null,
-    // pub spoiler_type: None,
-    // pub sun_roof_installed: null,
-    // pub third_row_seats: None,
-    pub timestamp: i64,
-    pub trim_badging: String,
-    pub use_range_badging: bool,
-    pub wheel_type: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct VehicleData {
-    pub id: i64,
-    pub user_id: i64,
-    pub vehicle_id: i64,
-    pub vin: String,
-    pub drive_state: VehicleDriveState,
-    pub climate_state: VehicleClimateState,
-    pub charge_state: VehicleChargeState,
-    pub gui_settings: VehicleGuiSettings,
-    pub vehicle_state: VehicleState,
-    pub vehicle_config: VehicleConfig,
-    pub state: String,
-    pub in_service: bool,
-    pub id_s: String,
-    pub calendar_enabled: bool,
-    pub api_version: i64,
-}
-
-pub struct ApiClient {
-    pub cookie: String,
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct ApiClientConfig {
     pub api_root: String,
     pub stream_path: String,
+    pub auth_root: String,
+}
+
+impl ApiClientConfig {
+    pub fn load(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let file = std::fs::File::open(path)?;
+        let reader = std::io::BufReader::new(file);
+        let c = serde_json::from_reader(reader)?;
+        Ok(c)
+    }
+}
+
+#[derive(Clone)]
+pub struct ApiClient {
+    pub cookie: String,
+    pub conf: ApiClientConfig,
     pub token: AccessTokenResponse,
 }
 impl ApiClient {
-    pub async fn init(cookie: &str, api_root: &str, stream_path: &str) -> Self {
+    pub async fn init(cookie: &str, conf: &ApiClientConfig) -> Self {
         let file = std::fs::File::open(".cache/token.json");
         let token = match file {
             Ok(file) => {
@@ -289,12 +74,12 @@ impl ApiClient {
         };
         ApiClient {
             cookie: cookie.to_string(),
-            api_root: api_root.to_string(),
-            stream_path: stream_path.to_string(),
-            token,
+            token: token,
+            conf: conf.clone(),
         }
     }
 
+    /// get access token
     pub async fn get_token(
         &mut self,
         email: &str,
@@ -306,7 +91,7 @@ impl ApiClient {
         if password.is_empty() {
             return Err(ApiError::InvalidPassword);
         }
-        let url = "https://auth.tesla.cn/oauth2/v3/authorize";
+        let url = format!("{}/oauth2/v3/authorize", self.conf.auth_root);
         let code_verifier = Alphanumeric.sample_string(&mut rand::thread_rng(), 86);
         let mut hasher = Sha256::new();
         hasher.update(&code_verifier);
@@ -374,7 +159,7 @@ impl ApiClient {
             .take(4)
             .collect_vec();
         input_tags.push(("cancel", ""));
-        let url = "https://auth.tesla.cn/oauth2/v3/authorize";
+        let url = format!("{}/oauth2/v3/authorize", self.conf.auth_root);
         let mut params = HashMap::new();
         params.insert("identity", email);
         params.insert("credential", password);
@@ -418,7 +203,7 @@ impl ApiClient {
             }
         }
         info!("code={:?}", code);
-        let url = "https://auth.tesla.cn/oauth2/v3/token";
+        let url = format!("{}/oauth2/v3/token", self.conf.auth_root);
         #[derive(Debug, Serialize)]
         struct SReq {
             grant_type: String,
@@ -451,6 +236,48 @@ impl ApiClient {
         Ok(resp)
     }
 
+    /// refresh token
+    pub async fn refresh_token(&mut self) -> Result<(), ApiError> {
+        let url = format!("{}/oauth2/v3/token", self.conf.auth_root);
+        #[derive(Debug, Serialize)]
+        struct SReq {
+            grant_type: String,
+            client_id: String,
+            refresh_token: String,
+            scope: String,
+        }
+        let client_id = "ownerapi";
+        let scope = "openid email offline_access";
+        let req = SReq {
+            grant_type: "refresh_token".to_string(),
+            client_id: client_id.to_string(),
+            refresh_token: self.token.refresh_token.clone(),
+            scope: scope.to_string(),
+        };
+        info!("old token={:?}", self.token);
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent("tesla-api")
+            .build()
+            .unwrap();
+        let mut resp = client
+            .post(url)
+            .json(&req)
+            .send()
+            .await?
+            .json::<AccessTokenResponse>()
+            .await?;
+        resp.create_timestamp = Some(chrono::Local::now().timestamp());
+        info!("new token={:?}", resp);
+        std::fs::write(
+            ".cache/token.json",
+            serde_json::to_string_pretty(&resp).unwrap(),
+        )
+        .unwrap();
+        self.token = resp;
+        Ok(())
+    }
+
     pub async fn charge_state(&self) -> Result<ChargeResponse, ApiError> {
         // let url = "https://www.tesla.cn/teslaaccount/charging/api/history";
         let url = "https://www.tesla.cn/teslaaccount/charging/api/history?startTime=2022-01-21T03%3A29%3A45.613Z&endTime=2023-01-21T03%3A29%3A45.613Z";
@@ -469,7 +296,7 @@ impl ApiClient {
     }
 
     pub async fn users_me(&self) -> Result<UsersMeResponse, ApiError> {
-        let url = self.api_root.to_string() + "/api/1/users/me";
+        let url = self.conf.api_root.to_string() + "/api/1/users/me";
 
         #[derive(Debug, Deserialize)]
         struct XResponse {
@@ -490,8 +317,9 @@ impl ApiClient {
         let resp = resp.json::<XResponse>().await?;
         Ok(resp.response)
     }
+
     pub async fn vehicles(&self) -> Result<Vec<Vehicle>, ApiError> {
-        let url = self.api_root.to_string() + "/api/1/vehicles";
+        let url = self.conf.api_root.to_string() + "/api/1/vehicles";
 
         #[derive(Debug, Deserialize)]
         struct XResponse {
@@ -518,11 +346,11 @@ impl ApiClient {
     }
 
     pub async fn vehicle_data(&self, id: i64) -> Result<VehicleData, ApiError> {
-        let url = format!("{}/api/1/vehicles/{id}/vehicle_data", self.api_root);
+        let url = format!("{}/api/1/vehicles/{id}/vehicle_data", self.conf.api_root);
         #[derive(Debug, Deserialize)]
         struct XResponse {
             response: Option<VehicleData>,
-            error: Option<String>,
+            // error: Option<String>,
         }
         let client = reqwest::Client::new();
         let resp = client
@@ -540,12 +368,11 @@ impl ApiClient {
         if let Some(resp) = resp.response {
             return Ok(resp);
         }
-        info!("vehicle data err = {:?}", resp.error);
         return Err(ApiError::VehicleUnavailable);
     }
 
     pub async fn wake_up(&self, id: i64) -> Result<VehicleData, ApiError> {
-        let url = format!("{}/api/1/vehicles/{id}/wake_up", self.api_root);
+        let url = format!("{}/api/1/vehicles/{id}/wake_up", self.conf.api_root);
         #[derive(Debug, Deserialize)]
         struct XResponse {
             response: VehicleData,
@@ -564,7 +391,11 @@ impl ApiClient {
         Ok(resp.response)
     }
 
-    pub async fn stream(&self, vehicle_id: i64) -> Result<(), ApiError> {
+    pub async fn stream(
+        &self,
+        vehicle_id: i64,
+        output: &tokio::sync::mpsc::Sender<DrivingState>,
+    ) -> Result<(), ApiError> {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::{connect_async_tls_with_config, tungstenite::protocol::Message};
         #[derive(Debug, Serialize)]
@@ -581,7 +412,7 @@ impl ApiClient {
             tag: format!("{vehicle_id}")
         };
         let json = serde_json::to_string(&connect_message).unwrap();
-        let (mut ws_stream, _) = connect_async_tls_with_config(&self.stream_path, None, None)
+        let (mut ws_stream, _) = connect_async_tls_with_config(&self.conf.stream_path, None, None)
             .await
             .unwrap();
         ws_stream.send(Message::text(json.clone())).await.unwrap();
@@ -598,7 +429,8 @@ impl ApiClient {
             error_type: Option<String>,
         }
         let log_path = format!(
-            ".cache/logs/{}.log",
+            ".cache/{}/logs/{}.log",
+            vehicle_id,
             chrono::Local::now().format("%Y_%m_%d"),
         );
         let mut f = std::fs::File::options()
@@ -615,7 +447,7 @@ impl ApiClient {
                         match msg.msg_type.as_str() {
                             "data:update" => {
                                 let arr = msg.value.as_ref().unwrap().split(",").collect_vec();
-                                let mut update = StreamDataUpdate::default();
+                                let mut update = DrivingState::default();
                                 let it = arr[0].parse::<i64>().expect("");
                                 update.timestamp = it / 1000;
                                 update.milliseconds = it % 1000;
@@ -645,17 +477,25 @@ impl ApiClient {
                                 let json = serde_json::to_string(&update).unwrap();
                                 f.write(json.as_bytes()).unwrap();
                                 f.write(b"\r\n").unwrap();
-                                info!("update={:?}", update);
+                                if let Err(_e) = output.send(update).await {
+                                    return Err(ApiError::LocalChannelClosed);
+                                }
                             }
                             "data:error" => {
                                 if msg.error_type.is_some() {
                                     match msg.error_type.as_ref().unwrap().as_str() {
                                         "vehicle_disconnected" => {
-                                            info!("resend subscribe");
                                             ws_stream
                                                 .send(Message::text(json.clone()))
                                                 .await
                                                 .unwrap();
+                                        }
+                                        "vehicle_error" => {
+                                            if let Some(value) = &msg.value {
+                                                if value.contains("Vehicle is offline") {
+                                                    return Err(ApiError::VehicleOffline);
+                                                }
+                                            }
                                         }
                                         "client_error" => {
                                             if let Some(value) = &msg.value {
@@ -673,11 +513,7 @@ impl ApiClient {
                                     f.write(b"\r\n").unwrap();
                                 }
                             }
-                            "control:hello" => {
-                                let json = serde_json::to_string(&msg).unwrap();
-                                f.write(json.as_bytes()).unwrap();
-                                f.write(b"\r\n").unwrap();
-                            }
+                            "control:hello" => {}
                             _ => {
                                 info!("unkown msg type, msg={:?}", msg);
                             }

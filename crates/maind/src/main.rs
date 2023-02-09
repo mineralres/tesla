@@ -2,15 +2,35 @@ use clap::Parser;
 use itertools::Itertools;
 use log::{error, info};
 use std::io::BufRead;
-use tesla_api::{ApiClient, ApiError, VehicleData};
+use tesla_api::{ApiClient, ApiClientConfig, ApiError};
 mod http;
+mod local_cache;
 use http::*;
+use local_cache::*;
+use pb::tesla::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 fn init_logger() {
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info")
     }
     tracing_subscriber::fmt::init();
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+struct Config {
+    pub client_config: ApiClientConfig,
+}
+
+impl Config {
+    pub fn load(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let file = std::fs::File::open(path)?;
+        let reader = std::io::BufReader::new(file);
+        let c = serde_json::from_reader(reader)?;
+        Ok(c)
+    }
 }
 
 #[derive(Parser)]
@@ -20,6 +40,8 @@ struct Opts {
     email: String,
     #[clap(short, long, default_value = "")]
     password: String,
+    #[clap(short, long, default_value = "configs/config.json")]
+    config: String,
 }
 
 #[tokio::main]
@@ -47,81 +69,133 @@ async fn main() {
     }
 
     check_make_dir(".cache");
-    check_make_dir(".cache/logs");
-    tokio::spawn(async {
-        httpd().await;
-    });
+    let conf = Config::load(&opts.config).expect("");
     let cookie = r#"gdp_user_id=gioenc-c5d09234,8ccd,5bd9,a37d,5e54ceaed440;"#;
-    let api_root = "https://owner-api.vn.cloud.tesla.cn";
-    // let stream_path = "wss://streaming.vn.teslamotors.com/streaming/";
-    let stream_path = "wss://streaming.vn.cloud.tesla.cn/streaming/";
-    let mut client = ApiClient::init(&cookie, api_root, stream_path).await;
-
-    let user = client.users_me().await;
-    match user {
-        Ok(user) => {
-            info!("user={:?}", user);
-        }
-        Err(e) => match e {
-            ApiError::Unauthorized => {
-                info!("Get new access token");
-                let _result = client
-                    .get_token(&email, &password)
-                    .await
-                    .expect("Failed to get new access_token");
-            }
-            _ => error!("api err={}", e),
-        },
-    }
-    let vehicles = client.vehicles().await.expect("");
-    info!("vehicles={:?}", vehicles);
-    let vehicle_data = client.vehicle_data(vehicles[0].id).await;
-    info!("vehicle_data={:?}", vehicle_data);
-    if let Ok(d) = vehicle_data {
-        save_vehicle_data(&d)
-            .await
-            .expect("save vehicle data failed");
-    }
+    let mut client = ApiClient::init(&cookie, &conf.client_config).await;
+    let _result = client
+        .get_token(&email, &password)
+        .await
+        .expect("Failed to get new access_token");
+    tokio::spawn(async move {
+        httpd(client).await;
+    });
+    let mut monitored = std::collections::HashSet::new();
+    let mut client = ApiClient::init(&cookie, &conf.client_config).await;
     loop {
-        let mut client = ApiClient::init(&cookie, api_root, stream_path).await;
-        info!("Create new ApiClient");
-        loop {
-            info!("Start streaming");
-            let resp = client.stream(vehicles[0].vehicle_id).await;
-            if let Err(e) = resp {
-                match e {
-                    ApiError::Unauthorized => {
-                        info!("Stream unauthorized, get new access token");
-                        let _result = client
-                            .get_token(&email, &password)
-                            .await
-                            .expect("Failed to get new access_token");
+        let vehicles = client.vehicles().await;
+        match vehicles {
+            Ok(vehicles) => {
+                for v in vehicles.iter() {
+                    if monitored.contains(&v.id) {
+                        continue;
                     }
-                    _ => {
-                        error!("stream err={}", e)
-                    }
+                    monitored.insert(v.id);
+                    let vehicle = (*v).clone();
+                    let conf = conf.clone();
+                    let conf2 = conf.clone();
+                    let email = email.clone();
+                    let password = password.to_string();
+                    let email2 = email.clone();
+                    let password2 = password.to_string();
+                    let (ds_sender, mut ds_receiver) = mpsc::channel::<DrivingState>(10000);
+                    let vehicle_online = Arc::new(AtomicBool::new(false));
+                    let vehicle_online1 = Arc::clone(&vehicle_online);
+                    tokio::spawn(async move {
+                        let mut client = ApiClient::init(&cookie, &conf.client_config).await;
+                        loop {
+                            if !vehicle_online1.load(Ordering::Relaxed) {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                                continue;
+                            }
+                            info!("Start {} ({}) stream.", vehicle.id, vehicle.display_name);
+                            let resp = client.stream(vehicle.vehicle_id, &ds_sender).await;
+                            if let Err(e) = resp {
+                                match e {
+                                    ApiError::Unauthorized => {
+                                        info!("Stream unauthorized, get new access token");
+                                        let _result = client
+                                            .get_token(&email, &password)
+                                            .await
+                                            .expect("Failed to get new access_token");
+                                    }
+                                    ApiError::StreamWebSocketClosed => (),
+                                    ApiError::VehicleOffline => {
+                                        vehicle_online1.store(false, Ordering::Relaxed);
+                                    }
+                                    _ => {
+                                        error!("stream err={}", e);
+                                        tokio::time::sleep(tokio::time::Duration::from_millis(
+                                            1000,
+                                        ))
+                                        .await;
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+                    tokio::spawn(async move {
+                        let mut client = ApiClient::init(&cookie, &conf2.client_config).await;
+                        let mut ls = local_cache::LocalStream::new(vehicle.vehicle_id);
+                        let mut last_vd = VehicleData::default();
+                        loop {
+                            tokio::select! {
+                                ds = ds_receiver.recv() => {
+                                    let mut vd = last_vd.clone();
+                                    vd.driving_state = ds;
+                                    ls.write(&vd).expect("save vd stream failed");
+                                }
+                                _instant = ticker.tick() => {
+                                    let vehicle_data = client.vehicle_data(vehicle.id).await;
+                                    match vehicle_data {
+                                        Ok(d) => {
+                                            info!("vehicle state=[{}]", d.state);
+                                            ls.write(&d).expect("save vd stream failed");
+                                            save_vehicle_data(&d)
+                                                .await
+                                                .expect("save vehicle data failed");
+                                            last_vd = d;
+                                        }
+                                        Err(e) => {
+                                            match e {
+                                            ApiError::Unauthorized => {
+                                                info!("Stream unauthorized, get new access token");
+                                                let _result = client
+                                                    .get_token(&email2, &password2)
+                                                    .await
+                                                    .expect("Failed to get new access_token");
+                                            }
+                                            ApiError::VehicleOffline => {
+                                                last_vd.state = "offline".to_string();
+                                            }
+                                            _ => {
+                                               last_vd.state = "unavailable".to_string();
+                                            }
+                                        }
+                                        error!("vehicle_data err=[{}]", e);
+                                    }
+                                    }
+                                    ls.write(&last_vd).expect("save vd stream failed");
+                                    vehicle_online.store(last_vd.state == "online", Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    });
                 }
-                break;
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+            Err(e) => match e {
+                ApiError::Unauthorized => {
+                    client.refresh_token().await.unwrap();
+                }
+                _ => error!("api vehicles err = {}", e),
+            },
         }
+        tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
     }
 }
 
 pub async fn save_vehicle_data(d: &VehicleData) -> Result<(), std::io::Error> {
-    let p = format!(".cache/vehicle_data_{}.json", d.id);
+    let p = format!(".cache/{}/vehicle_data.json", d.vehicle_id);
     std::fs::write(&p, serde_json::to_string_pretty(d).unwrap())?;
     Ok(())
-}
-
-pub fn check_make_dir(dir: &str) {
-    match std::fs::create_dir_all(dir) {
-        Ok(_) => (),
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-            } else {
-                panic!("create dir={} err={}", dir, e);
-            }
-        }
-    }
 }

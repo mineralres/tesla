@@ -35,5 +35,8 @@ tower-http = { version = "0.3.0", features = ["fs", "trace"] }
 hyper = { version = "0.14", features = ["full"] }
 eviltransform = { git = "https://github.com/googollee/eviltransform", branch = "master" }
 clap = { version = "3.2.6", features = ["derive"] }
+pb = { path = "../pb" }
+byteorder = "1.0"
+prost = "0.11"
 
 [dev-dependencies]

@@ -1,9 +1,7 @@
-import React, { useEffect, useState, useContext, useReducer, useRef } from 'react';
-import { Row, Col, Divider, Select, Card, InputNumber, Table, Input, Spin, Checkbox, Tabs, Button } from 'antd';
+import React, { useEffect, useState } from 'react';
+import { Row, Col } from 'antd';
 import ReactEcharts from 'echarts-for-react';
-import echarts from 'echarts/lib/echarts';
-
-import { track } from '../../services/tesla';
+import { track, vehicles, vehicle_data } from '../../services/tesla';
 
 // 请确保在引入百度地图扩展之前已经引入百度地图 JS API 脚本并成功加载
 // https://api.map.baidu.com/api?v=3.0&ak=你申请的AK
@@ -13,6 +11,14 @@ export default () => {
     let a: any[] = [];
     const [lines, setLines] = useState(a);
     useEffect(() => {
+        vehicles().then(res => {
+            console.log("vehicles", res);
+            if (res.length > 0) {
+                vehicle_data(res[0].vehicle_id).then(res => {
+                    console.log("vehicle_data", res);
+                });
+            }
+        });
         track().then(res => {
             let coords: any[] = [];
             res.footprint.forEach((e: any) => {
