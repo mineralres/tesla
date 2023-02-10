@@ -1,10 +1,12 @@
 import React, { useEffect, useState, } from 'react';
-import { Spin, Tabs, Row, Col, Descriptions, Badge, Image, Card } from 'antd';
+import { Space, Spin, Tabs, Row, Col, Descriptions, Badge, Image, Card, Table, Tag, Button } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
 import ReactEcharts from 'echarts-for-react';
 // import echarts from 'echarts/lib/echarts';
-import { track, vehicle_data } from '../services/tesla';
+import { track, vehicle_data, history_trips, history_charges } from '../services/tesla';
 import moment from 'moment';
 import 'echarts/extension/bmap/bmap.js';
+import SmallButton from '../components/SmallButton';
 import { useParams } from "react-router-dom";
 const { TabPane } = Tabs;
 
@@ -89,6 +91,145 @@ const Overview = (props: any) => {
 	</div>)
 }
 
+const HistoryCharges = (props: any) => {
+	const { vehicle_id, drive_state } = props;
+	let a: any[] = [];
+	useEffect(() => {
+		history_charges(vehicle_id).then(res => {
+			console.log("history charges ", res);
+		})
+		return () => { };
+	}, [vehicle_id]);
+
+	if (vehicle_id === 0) {
+		return (<div></div>);
+	}
+	return <div>
+	</div>
+}
+
+const HistoryTrips = (props: any) => {
+	const { vehicle_id, drive_state } = props;
+	const [trips, setTrips] = useState([]);
+	const [currentTrackIndex, setCurrentTrackIndex] = useState(-1);
+	let a: any[] = [];
+	useEffect(() => {
+		history_trips(vehicle_id).then(res => {
+			console.log("history charges ", res);
+			setTrips(res.trips);
+		})
+		return () => { };
+	}, [vehicle_id]);
+	console.log(trips, currentTrackIndex);
+
+	if (vehicle_id === 0) {
+		return (<div></div>);
+	}
+	interface DataType {
+		startTime: number;
+		endTime: number;
+		key: number,
+	}
+
+	const columns: ColumnsType<DataType> = [
+		{
+			title: '起始',
+			dataIndex: 'startTime',
+			key: 'start-time',
+			render: (t) => <a>{
+				moment.unix(t / 1000).format('YYYY-MM-DD HH:mm:ss')
+			}</a>,
+		},
+		{
+			title: '结束',
+			dataIndex: 'endTime',
+			key: 'end-time',
+			render: (t) => <a>{
+				moment.unix(t / 1000).format('YYYY-MM-DD HH:mm:ss')
+			}</a>,
+		},
+		{
+			title: '查看',
+			render: (row: any) => {
+				return <SmallButton type="link" onClick={() => {
+					setCurrentTrackIndex(row.key);
+				}}>查看轨迹</SmallButton>
+			}
+		}
+	];
+	let get_data = () => {
+		return trips.map((trip: any, index) => {
+			let d: DataType = {
+				startTime: trip.track[0].timestamp,
+				endTime: trip.track[trip.track.length - 1].timestamp,
+				key: index,
+			}
+			return d;
+		});
+	}
+	const get_lines = () => {
+		let coords: any[] = [];
+		if (currentTrackIndex < 0 || currentTrackIndex > trips.length) {
+			return coords;
+		}
+		console.log("trips", trips, currentTrackIndex);
+		const track = (trips[currentTrackIndex] as any).track;
+		for (let i = 0; i < track.length; i++) {
+			coords.push([track[i].longitude, track[i].latitude]);
+		}
+		if (coords.length > 0) {
+			return [{ coords }];
+		}
+	}
+	const get_center = () => {
+		let coords: any[] = [];
+		if (currentTrackIndex < 0 || currentTrackIndex > trips.length) {
+			return [drive_state.longitude, drive_state.latitude];
+		}
+		const track = (trips[currentTrackIndex] as any).track;
+		return [track[0].longitude, track[0].latitude];
+	}
+	const getOption = () => {
+		const option = {
+			bmap: {
+				center: get_center(),
+				zoom: 14,
+				roam: true,
+				mapStyle: {
+
+				}
+			},
+			series: [
+				{
+					type: 'lines',
+					coordinateSystem: 'bmap',
+					data: get_lines(),
+					polyline: true,
+					lineStyle: {
+						color: 'green',
+						opacity: 0.9,
+						width: 1
+					}
+				}
+			]
+		};
+		return option;
+	}
+	return <div>
+		<Row>
+			<Col span={8}>
+				<Table columns={columns} dataSource={get_data()} />
+			</Col>
+			<Col span={16}>
+				<ReactEcharts
+					option={getOption()}
+					style={{ height: '780px', }}
+				/>
+			</Col>
+		</Row>
+	</div>
+}
+
 export default () => {
 	const [loading, setLoading] = useState(false);
 	const { vehicle_id } = useParams<{ vehicle_id?: string }>();
@@ -115,8 +256,12 @@ export default () => {
 				<Overview {...vehicleData}></Overview>
 			</TabPane>
 			<TabPane tab="管理" key="management" ></TabPane>
-			<TabPane tab="充电" key="charge" ></TabPane>
-			<TabPane tab="旅程" key="trip" ></TabPane>
+			<TabPane tab="充电" key="charge" >
+				<HistoryCharges {...vehicleData}></HistoryCharges>
+			</TabPane>
+			<TabPane tab="旅程" key="trip" >
+				<HistoryTrips {...vehicleData}></HistoryTrips>
+			</TabPane>
 			<TabPane tab="足迹" key="track" >
 				<Track {...vehicleData} ></Track>
 			</TabPane>

@@ -449,8 +449,7 @@ impl ApiClient {
                                 let arr = msg.value.as_ref().unwrap().split(",").collect_vec();
                                 let mut update = DrivingState::default();
                                 let it = arr[0].parse::<i64>().expect("");
-                                update.timestamp = it / 1000;
-                                update.milliseconds = it % 1000;
+                                update.timestamp = it;
                                 let pf = |s: &str| {
                                     if s.len() == 0 {
                                         0.0

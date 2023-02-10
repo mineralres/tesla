@@ -1,9 +1,10 @@
 # tesla
 这是一个和teslamate类似的 tesla车子数据缓存和统计的工具，后端使用rust实现，前端用的是react框架.
 
-* 用rust实现
 * 直接保存数据，不需要运行三方数据库，方便部署
 * 带一个可视化web端
+* 不会主动唤醒车辆
+* 后端用rust实现, web使用react框架
 
 
 ### build
@@ -19,7 +20,7 @@ npm run build
 ```
 or
 
-create new file in .cache/pass.txt, firstl line is your email, second line is your password
+create new file in .cache/pass.txt(first line is email, second line is password)
 then
 ```
 ./target/release/maind

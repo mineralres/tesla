@@ -15,6 +15,7 @@ use axum::{
 };
 use derive_more::{Display, From};
 use log::info;
+use prost::Message;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::{io, net::SocketAddr};
@@ -65,6 +66,8 @@ pub async fn httpd(api_client: ApiClient) {
         .route("/api/tesla/vehicles", post(vehicles))
         .route("/api/tesla/vehicle_data", post(vehicle_data))
         .route("/api/tesla/user_me", post(user_me))
+        .route("/api/tesla/history_trips", post(history_trips))
+        .route("/api/tesla/history_charges", post(history_charges))
         .with_state(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], 3600));
     info!("listening on asset {}", addr);
@@ -129,6 +132,98 @@ async fn track(
                     rsp.longitude.push(lng);
                     rsp.latitude.push(lat);
                     rsp.elevation.push(ds.elevation);
+                });
+        }
+        Err(_e) => (),
+    }
+    Json(rsp)
+}
+
+#[derive(Deserialize)]
+struct HistoryTripsRequest {
+    id: i64,
+}
+
+/// response for track
+#[derive(Debug, Default, serde::Serialize, Deserialize)]
+struct HistoryTripsResponse {
+    trips: Vec<Trip>,
+}
+
+/// history trip
+async fn history_trips(
+    State(_api): State<TeslaApiClient>,
+    Json(req): Json<HistoryTripsRequest>,
+) -> Json<HistoryTripsResponse> {
+    let mut rsp = HistoryTripsResponse::default();
+    let mut one_trip = Trip::default();
+    match local_cache::LocalStream::load(req.id) {
+        Ok(v) => {
+            v.iter().for_each(|vd| {
+                if vd.state == "online" {
+                    let mut s = TripSnapshot::default();
+                    if let Some(ds) = &vd.driving_state {
+                        if ds.timestamp < 1675843854 * 1000 {
+                            s.timestamp = ds.timestamp * 1000;
+                        } else {
+                            s.timestamp = ds.timestamp;
+                        }
+                        let (lat, lng) = wgs_to_bd09(ds.est_lat, ds.est_lng);
+                        s.latitude = lat;
+                        s.longitude = lng;
+                        s.elevation = ds.elevation;
+                        if let Some(cs) = &vd.climate_state {
+                            s.inside_temperature = cs.inside_temp;
+                            s.outside_temperature = cs.outside_temp;
+                        }
+                    }
+                    if s.timestamp > 0 {
+                        one_trip.track.push(s);
+                    }
+                } else {
+                    if one_trip.track.len() > 0 {
+                        rsp.trips.push(one_trip.clone());
+                        one_trip.track.clear();
+                    }
+                }
+            });
+        }
+        Err(_e) => (),
+    }
+    Json(rsp)
+}
+
+#[derive(Deserialize)]
+struct HistoryChargesRequest {
+    id: i64,
+}
+
+/// response for track
+#[derive(Debug, Default, serde::Serialize, Deserialize)]
+struct HistoryChargesResponse {
+    history_charges: Vec<HistoryCharge>,
+}
+/// history charge
+async fn history_charges(
+    State(_api): State<TeslaApiClient>,
+    Json(req): Json<HistoryChargesRequest>,
+) -> Json<HistoryChargesResponse> {
+    let mut rsp = HistoryChargesResponse::default();
+    let mut one_history_charge = HistoryCharge::default();
+    match local_cache::LocalStream::load(req.id) {
+        Ok(v) => {
+            v.iter()
+                .filter(|vd| vd.charge_state.is_some())
+                .for_each(|vd| {
+                    let cs = vd.charge_state.as_ref().unwrap();
+                    if cs.charger_power > 0.0 {
+                        one_history_charge.details.push(cs.clone());
+                    } else {
+                        if one_history_charge.details.len() > 0 {
+                            rsp.history_charges.push(one_history_charge.clone());
+                            one_history_charge.clear();
+                        }
+                    }
                 });
         }
         Err(_e) => (),

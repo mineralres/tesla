@@ -19,7 +19,7 @@ message Vehicle {
 /// 数据推送
 message DrivingState {
   int64 timestamp = 1;
-  int64 milliseconds = 2;
+  int64 unused_reserved = 2;
   double speed = 3;
   double odometer = 4;
   double soc = 5;
@@ -255,3 +255,6 @@ message Trip {
   string finish_address = 3;
   repeated TripSnapshot track = 4;
 }
+
+/// charge duration
+message HistoryCharge { repeated VehicleChargeState details = 1; }
