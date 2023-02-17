@@ -2,7 +2,8 @@ use clap::Parser;
 use itertools::Itertools;
 use log::{error, info};
 use std::io::BufRead;
-use tesla_api::{ApiClient, ApiClientConfig, ApiError};
+use tesla_api::{ApiClient, ApiError};
+mod config;
 mod http;
 mod local_cache;
 use http::*;
@@ -17,20 +18,6 @@ fn init_logger() {
         std::env::set_var("RUST_LOG", "info")
     }
     tracing_subscriber::fmt::init();
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-struct Config {
-    pub client_config: ApiClientConfig,
-}
-
-impl Config {
-    pub fn load(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let file = std::fs::File::open(path)?;
-        let reader = std::io::BufReader::new(file);
-        let c = serde_json::from_reader(reader)?;
-        Ok(c)
-    }
 }
 
 #[derive(Parser)]
@@ -69,7 +56,8 @@ async fn main() {
     }
 
     check_make_dir(".cache");
-    let conf = Config::load(&opts.config).expect("");
+    let conf = config::Config::load(&opts.config).expect("");
+    let conf1 = conf.clone();
     let cookie = r#"gdp_user_id=gioenc-c5d09234,8ccd,5bd9,a37d,5e54ceaed440;"#;
     let mut client = ApiClient::init(&cookie, &conf.client_config).await;
     let _result = client
@@ -77,7 +65,7 @@ async fn main() {
         .await
         .expect("Failed to get new access_token");
     tokio::spawn(async move {
-        httpd(client).await;
+        httpd(client, &conf1).await;
     });
     let mut monitored = std::collections::HashSet::new();
     let mut client = ApiClient::init(&cookie, &conf.client_config).await;

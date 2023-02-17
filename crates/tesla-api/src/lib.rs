@@ -5,7 +5,6 @@ use pb::tesla::Vehicle;
 use pb::tesla::*;
 use rand::distributions::{Alphanumeric, DistString};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::Write;
 
@@ -20,6 +19,7 @@ pub enum ApiError {
     InvalidEmail,
     InvalidPassword,
     LocalChannelClosed,
+    AuthFailed(String),
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -91,14 +91,11 @@ impl ApiClient {
         if password.is_empty() {
             return Err(ApiError::InvalidPassword);
         }
+        // return self.get_token1(email, password).await;
+        use oauth2::PkceCodeChallenge;
+        let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+
         let url = format!("{}/oauth2/v3/authorize", self.conf.auth_root);
-        let code_verifier = Alphanumeric.sample_string(&mut rand::thread_rng(), 86);
-        let mut hasher = Sha256::new();
-        hasher.update(&code_verifier);
-        let result = hasher.finalize();
-        let result: String = format!("{:x}", result);
-        let base64_string = base64_url::encode(&result);
-        let code_challenge = base64_string;
         let state = Alphanumeric.sample_string(&mut rand::thread_rng(), 20);
         let client_id = "ownerapi";
         let scope = "openid email offline_access";
@@ -107,6 +104,8 @@ impl ApiClient {
             .user_agent("tesla-api")
             .build()
             .unwrap();
+        let code_challenge = pkce_challenge.as_str().to_owned();
+        let code_verifier = pkce_verifier.secret().clone();
         let resp = client
             .get(url)
             .query(&[
@@ -202,7 +201,7 @@ impl ApiClient {
                 code = p.1.to_string();
             }
         }
-        info!("code={:?}", code);
+        info!("code={code} code_verifier={code_verifier}");
         let url = format!("{}/oauth2/v3/token", self.conf.auth_root);
         #[derive(Debug, Serialize)]
         struct SReq {
@@ -219,13 +218,14 @@ impl ApiClient {
             code_verifier: code_verifier,
             redirect_uri: "https://auth.tesla.com/void/callback".to_string(),
         };
-        let mut resp = client
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .json::<AccessTokenResponse>()
-            .await?;
+        let resp = client.post(&url).json(&req).send().await?;
+        if !resp.status().is_success() {
+            let v: serde_json::Value = resp.json::<serde_json::Value>().await?;
+            let ret = ApiError::AuthFailed(v["error_description"].as_str().unwrap().to_owned());
+            info!("res={:?}", ret);
+            return Err(ret);
+        }
+        let mut resp = resp.json::<AccessTokenResponse>().await?;
         resp.create_timestamp = Some(chrono::Local::now().timestamp());
         std::fs::write(
             ".cache/token.json",

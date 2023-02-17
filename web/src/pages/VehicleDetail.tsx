@@ -93,10 +93,12 @@ const Overview = (props: any) => {
 
 const HistoryCharges = (props: any) => {
 	const { vehicle_id, drive_state } = props;
-	let a: any[] = [];
+	const [chargeList, setChargeList] = useState([]);
+	const [currentIndex, setCurrentIndex] = useState(-1);
 	useEffect(() => {
 		history_charges(vehicle_id).then(res => {
 			console.log("history charges ", res);
+			setChargeList(res.history_charges);
 		})
 		return () => { };
 	}, [vehicle_id]);
@@ -104,7 +106,75 @@ const HistoryCharges = (props: any) => {
 	if (vehicle_id === 0) {
 		return (<div></div>);
 	}
+	interface DataType {
+		startTime: number;
+		endTime: number;
+		key: number,
+		chargeEnergyAdded: number
+		rangeAdded: number
+	}
+
+	const columns: ColumnsType<DataType> = [
+		{
+			title: '起始',
+			dataIndex: 'startTime',
+			key: 'start-time',
+			render: (t) => <a>{
+				moment.unix(t / 1000).format('YYYY-MM-DD HH:mm:ss')
+			}</a>,
+		},
+		{
+			title: '结束',
+			dataIndex: 'endTime',
+			key: 'end-time',
+			render: (t) => <a>{
+				moment.unix(t / 1000).format('YYYY-MM-DD HH:mm:ss')
+			}</a>,
+		},
+		{
+			title: '电量增加(kw)',
+			dataIndex: 'chargeEnergyAdded',
+			key: 'charge_energy_added',
+		},
+		{
+			title: '里程增加(km)',
+			key: 'range_added',
+			render: (row: any) => {
+				return <a>{row.rangeAdded.toFixed(1)}</a>;
+			}
+		},
+		{
+			title: '查看',
+			render: (row: any) => {
+				return <SmallButton type="link" onClick={() => {
+					setCurrentIndex(row.key);
+				}}>查看明细</SmallButton>
+			}
+		}
+	];
+	let get_data = () => {
+		return chargeList.map((c: any, index) => {
+			let first = c.details[0];
+			let last = c.details[c.details.length - 1];
+			let d: DataType = {
+				startTime: first.timestamp,
+				endTime: last.timestamp,
+				key: index,
+				chargeEnergyAdded: last.charge_energy_added,
+				rangeAdded: last.charge_miles_added_ideal * 1.609
+			}
+			return d;
+		});
+	}
+
 	return <div>
+		<Row>
+			<Col span={12}>
+				<Table columns={columns} dataSource={get_data()} />
+			</Col>
+			<Col span={12}>
+			</Col>
+		</Row>
 	</div>
 }
 
@@ -159,9 +229,10 @@ const HistoryTrips = (props: any) => {
 	];
 	let get_data = () => {
 		return trips.map((trip: any, index) => {
+			let last = trip.track[trip.track.length - 1];
 			let d: DataType = {
 				startTime: trip.track[0].timestamp,
-				endTime: trip.track[trip.track.length - 1].timestamp,
+				endTime: last.timestamp,
 				key: index,
 			}
 			return d;
