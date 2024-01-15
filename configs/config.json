@@ -1,9 +1,0 @@
-{
-	"client_config": {
-		"api_root": "https://owner-api.vn.cloud.tesla.cn",
-		"stream_path": "wss://streaming.vn.cloud.tesla.cn/streaming/",
-		"auth_root": "https://auth.tesla.cn"
-	},
-	"http_port": 3600,
-	"https_port": 0
-}

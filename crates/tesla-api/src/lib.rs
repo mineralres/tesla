@@ -1,15 +1,15 @@
-use derive_more::{Display, From};
+use base::pb::tesla::*;
+use futures_util::{SinkExt, StreamExt};
 use itertools::Itertools;
 use log::{error, info};
-use pb::tesla::Vehicle;
-use pb::tesla::*;
-use rand::distributions::{Alphanumeric, DistString};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::io::Write;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio_tungstenite::{connect_async_tls_with_config, tungstenite::protocol::Message};
 
-#[derive(Debug, Display, From)]
-pub enum ApiError {
+#[derive(Debug, derive_more::Display, derive_more::From)]
+pub enum Error {
     ReqwestError(reqwest::Error),
     EmptyTeslaAuthSid,
     Unauthorized,
@@ -20,6 +20,9 @@ pub enum ApiError {
     InvalidPassword,
     LocalChannelClosed,
     AuthFailed(String),
+    WsErr(tokio_tungstenite::tungstenite::Error),
+    AccessTokenExpired,
+    SerdeJsonErr(serde_json::Error),
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -39,30 +42,14 @@ pub struct UsersMeResponse {
     pub profile_image_url: String,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct ApiClientConfig {
-    pub api_root: String,
-    pub stream_path: String,
-    pub auth_root: String,
-}
-
-impl ApiClientConfig {
-    pub fn load(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let file = std::fs::File::open(path)?;
-        let reader = std::io::BufReader::new(file);
-        let c = serde_json::from_reader(reader)?;
-        Ok(c)
-    }
-}
-
-#[derive(Clone)]
-pub struct ApiClient {
+pub struct TokenState {
     pub cookie: String,
-    pub conf: ApiClientConfig,
-    pub token: AccessTokenResponse,
+    token: AccessTokenResponse,
+    conf: ApiConfig,
 }
-impl ApiClient {
-    pub async fn init(cookie: &str, conf: &ApiClientConfig) -> Self {
+
+impl TokenState {
+    pub async fn new(conf: &ApiConfig, cookie: String) -> Result<Self, Error> {
         let file = std::fs::File::open(".cache/token.json");
         let token = match file {
             Ok(file) => {
@@ -72,172 +59,23 @@ impl ApiClient {
             }
             Err(_e) => AccessTokenResponse::default(),
         };
-        ApiClient {
-            cookie: cookie.to_string(),
-            token: token,
+        Ok(Self {
+            token,
             conf: conf.clone(),
-        }
+            cookie,
+        })
     }
 
-    /// get access token
-    pub async fn get_token(
-        &mut self,
-        email: &str,
-        password: &str,
-    ) -> Result<AccessTokenResponse, ApiError> {
-        if email.is_empty() {
-            return Err(ApiError::InvalidEmail);
-        }
-        if password.is_empty() {
-            return Err(ApiError::InvalidPassword);
-        }
-        // return self.get_token1(email, password).await;
-        use oauth2::PkceCodeChallenge;
-        let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
-
-        let url = format!("{}/oauth2/v3/authorize", self.conf.auth_root);
-        let state = Alphanumeric.sample_string(&mut rand::thread_rng(), 20);
-        let client_id = "ownerapi";
-        let scope = "openid email offline_access";
-        let response_type = "code";
-        let client = reqwest::Client::builder()
-            .user_agent("tesla-api")
-            .build()
-            .unwrap();
-        let code_challenge = pkce_challenge.as_str().to_owned();
-        let code_verifier = pkce_verifier.secret().clone();
-        let resp = client
-            .get(url)
-            .query(&[
-                ("client_id", client_id),
-                ("code_challenge", &code_challenge),
-                ("code_challenge_method", "S256"),
-                ("redirect_uri", "https://auth.tesla.com/void/callback"),
-                ("response_type", response_type),
-                ("scope", scope),
-                ("state", &state),
-                ("login_hint", &email),
-            ])
-            .header("User-Agent", "tesla-api")
-            .send()
-            .await?;
-        let mut c1 = "".to_string();
-        for (header_name, header_value) in resp.headers() {
-            if header_name == "set-cookie" {
-                c1 = header_value.to_str().unwrap().to_string();
-                break;
-            }
-        }
-        if c1.is_empty() {
-            return Err(ApiError::EmptyTeslaAuthSid);
-        }
-        let html = resp.text().await?;
-        let form_start_index = html
-            .find(r#"<form method="post" id="form" class="sso-form sign-in-form">"#)
-            .unwrap();
-        let html = &html[form_start_index..];
-        let mut input_tags = html
-            .lines()
-            .filter(|l| l.contains("<input") && l.contains("hidden"))
-            .map(|l| {
-                let arr = l
-                    .trim()
-                    .split(" ")
-                    .filter(|s| s.contains("="))
-                    .map(|s| {
-                        s.split("=")
-                            .map(|s| s.trim_matches('\"'))
-                            .collect::<Vec<_>>()
-                    })
-                    .filter(|v| v.len() == 2)
-                    .collect::<Vec<_>>();
-                arr
-            })
-            .filter(|arr| arr.len() == 3)
-            .map(|arr| (arr[1][1], arr[2][1]))
-            .take(4)
-            .collect_vec();
-        input_tags.push(("cancel", ""));
-        let url = format!("{}/oauth2/v3/authorize", self.conf.auth_root);
-        let mut params = HashMap::new();
-        params.insert("identity", email);
-        params.insert("credential", password);
-        for it in &input_tags {
-            params.insert(it.0, it.1);
-        }
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent("tesla-api")
-            .build()
-            .unwrap();
-        let builder = client
-            .post(url)
-            .header("cookie", &c1)
-            .header("User-Agent", "tesla-api")
-            .query(&[
-                ("client_id", client_id),
-                ("code_challenge", &code_challenge),
-                ("code_challenge_method", "S256"),
-                ("redirect_uri", "https://auth.tesla.com/void/callback"),
-                ("response_type", response_type),
-                ("scope", scope),
-                ("state", &state),
-            ])
-            .form(&params);
-        let resp = builder.send().await?;
-        let mut redirect_location = "".to_string();
-        for (hn, hv) in resp.headers() {
-            if hn == "location" {
-                redirect_location = hv.to_str().unwrap().to_string();
-                break;
-            }
-        }
-        let mut code = "".to_string();
-        for p in reqwest::Url::parse(&redirect_location)
-            .unwrap()
-            .query_pairs()
-        {
-            if p.0 == "code" {
-                code = p.1.to_string();
-            }
-        }
-        info!("code={code} code_verifier={code_verifier}");
-        let url = format!("{}/oauth2/v3/token", self.conf.auth_root);
-        #[derive(Debug, Serialize)]
-        struct SReq {
-            grant_type: String,
-            client_id: String,
-            code: String,
-            code_verifier: String,
-            redirect_uri: String,
-        }
-        let req = SReq {
-            grant_type: "authorization_code".to_string(),
-            client_id: client_id.to_string(),
-            code: code,
-            code_verifier: code_verifier,
-            redirect_uri: "https://auth.tesla.com/void/callback".to_string(),
-        };
-        let resp = client.post(&url).json(&req).send().await?;
-        if !resp.status().is_success() {
-            let v: serde_json::Value = resp.json::<serde_json::Value>().await?;
-            let ret = ApiError::AuthFailed(v["error_description"].as_str().unwrap().to_owned());
-            info!("res={:?}", ret);
-            return Err(ret);
-        }
-        let mut resp = resp.json::<AccessTokenResponse>().await?;
-        resp.create_timestamp = Some(chrono::Local::now().timestamp());
+    fn cache_token(token: &AccessTokenResponse) -> std::io::Result<()> {
         std::fs::write(
             ".cache/token.json",
-            serde_json::to_string_pretty(&resp).unwrap(),
+            serde_json::to_string_pretty(&token).unwrap(),
         )
-        .unwrap();
-        self.token = resp.clone();
-        Ok(resp)
     }
 
     /// refresh token
-    pub async fn refresh_token(&mut self) -> Result<(), ApiError> {
+    pub async fn refresh_token(&mut self) -> Result<(), Error> {
+        info!("start refresh_token ");
         let url = format!("{}/oauth2/v3/token", self.conf.auth_root);
         #[derive(Debug, Serialize)]
         struct SReq {
@@ -254,7 +92,6 @@ impl ApiClient {
             refresh_token: self.token.refresh_token.clone(),
             scope: scope.to_string(),
         };
-        info!("old token={:?}", self.token);
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .user_agent("tesla-api")
@@ -268,76 +105,113 @@ impl ApiClient {
             .json::<AccessTokenResponse>()
             .await?;
         resp.create_timestamp = Some(chrono::Local::now().timestamp());
-        info!("new token={:?}", resp);
-        std::fs::write(
-            ".cache/token.json",
-            serde_json::to_string_pretty(&resp).unwrap(),
-        )
-        .unwrap();
+        TokenState::cache_token(&resp).expect("");
+        info!("new token ={:?}", resp);
         self.token = resp;
         Ok(())
     }
 
-    pub async fn charge_state(&self) -> Result<ChargeResponse, ApiError> {
+    pub fn set_api_token(
+        &mut self,
+        access_token: &str,
+        refresh_token: &str,
+    ) -> std::io::Result<()> {
+        self.token.access_token = access_token.to_string();
+        self.token.refresh_token = refresh_token.to_string();
+        self.token.create_timestamp = Some(chrono::Local::now().timestamp());
+        TokenState::cache_token(&self.token)
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.token.access_token.len() > 0 && self.token.refresh_token.len() > 0
+    }
+
+    pub async fn check_refresh_token(&mut self) -> Result<(), Error> {
+        let nowts = chrono::Local::now().timestamp();
+        if let Some(ct) = self.token.create_timestamp {
+            info!("token will be expired in {}", ct + self.token.expires_in - nowts);
+            if ct + self.token.expires_in - nowts < 1800 {
+                info!("now need to refresh token");
+            } else {
+                return Ok(());
+            }
+        }
+        info!("check_refresh_token 2");
+        self.refresh_token().await
+    }
+}
+
+#[derive(Clone)]
+pub struct ApiClient {
+    pub conf: ApiConfig,
+    pub token: std::sync::Arc<tokio::sync::Mutex<TokenState>>,
+}
+impl ApiClient {
+    pub async fn init(
+        conf: &ApiConfig,
+        token: std::sync::Arc<tokio::sync::Mutex<TokenState>>,
+    ) -> Self {
+        ApiClient {
+            conf: conf.clone(),
+            token,
+        }
+    }
+
+    async fn make_api_request_builder(&self, path: &str) -> reqwest::RequestBuilder {
+        let url = format!("{}{}", self.conf.api_root.to_string(), path);
+        let access_token = { self.token.lock().await.token.access_token.clone() };
+        reqwest::Client::new()
+            .get(url)
+            .header("Authorization", format!("Bearer {}", access_token))
+    }
+
+    pub async fn charge_state(&self) -> Result<ChargeResponse, Error> {
         // let url = "https://www.tesla.cn/teslaaccount/charging/api/history";
         let url = "https://www.tesla.cn/teslaaccount/charging/api/history?startTime=2022-01-21T03%3A29%3A45.613Z&endTime=2023-01-21T03%3A29%3A45.613Z";
 
         let client = reqwest::Client::new();
-        let resp = client
-            .get(url)
-            .header("cookie", &self.cookie)
-            .send()
-            .await?;
+        let resp = client.get(url).send().await?;
         if resp.status() == 401 {
-            return Err(ApiError::Unauthorized);
+            return Err(Error::Unauthorized);
         }
         let resp_data = resp.json::<ChargeResponse>().await?;
         Ok(resp_data)
     }
 
-    pub async fn users_me(&self) -> Result<UsersMeResponse, ApiError> {
-        let url = self.conf.api_root.to_string() + "/api/1/users/me";
-
+    pub async fn users_me(&self) -> Result<UsersMeResponse, Error> {
         #[derive(Debug, Deserialize)]
         struct XResponse {
             response: UsersMeResponse,
         }
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(url)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.token.access_token),
-            )
+        let resp = self
+            .make_api_request_builder("/api/1/users/me")
+            .await
             .send()
             .await?;
         if resp.status() == 401 {
-            return Err(ApiError::Unauthorized);
+            return Err(Error::Unauthorized);
         }
         let resp = resp.json::<XResponse>().await?;
         Ok(resp.response)
     }
 
-    pub async fn vehicles(&self) -> Result<Vec<Vehicle>, ApiError> {
-        let url = self.conf.api_root.to_string() + "/api/1/vehicles";
-
+    pub async fn vehicles(&self) -> Result<Vec<Vehicle>, Error> {
         #[derive(Debug, Deserialize)]
         struct XResponse {
             response: Vec<Vehicle>,
             count: i32,
         }
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(url)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.token.access_token),
-            )
+        let resp = self
+            .make_api_request_builder("/api/1/vehicles")
+            .await
             .send()
             .await?;
         if resp.status() == 401 {
-            return Err(ApiError::Unauthorized);
+            return Err(Error::Unauthorized);
         }
+        // let text = resp.text().await?;
+        // let j: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // panic!("{}", serde_json::to_string_pretty(&j).unwrap());
         let resp = resp.json::<XResponse>().await?;
         if resp.response.len() as i32 != resp.count {
             panic!("resp={:?}", resp);
@@ -345,45 +219,45 @@ impl ApiClient {
         Ok(resp.response)
     }
 
-    pub async fn vehicle_data(&self, id: i64) -> Result<VehicleData, ApiError> {
-        let url = format!("{}/api/1/vehicles/{id}/vehicle_data", self.conf.api_root);
+    pub async fn vehicle_data(&self, id: i64) -> Result<VehicleData, Error> {
         #[derive(Debug, Deserialize)]
         struct XResponse {
             response: Option<VehicleData>,
-            // error: Option<String>,
+            //            error: Option<String>,
+            //           error_description: Option<String>,
         }
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(url)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.token.access_token),
-            )
+        let resp = self
+            .make_api_request_builder(&format!("/api/1/vehicles/{id}/vehicle_data"))
+            .await
             .send()
             .await?;
         if resp.status() == 401 {
-            return Err(ApiError::Unauthorized);
+            return Err(Error::Unauthorized);
         }
-        let resp = resp.json::<XResponse>().await?;
+        let text = resp.text().await?;
+        // let j: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // panic!("{}", serde_json::to_string_pretty(&j).unwrap());
+        let resp = serde_json::from_str::<XResponse>(&text);
+        if let Err(e) = &resp {
+            error!("{text}");
+            error!("{e}");
+        }
+        let resp = resp?;
+        // let resp = resp.json::<XResponse>().await?;
         if let Some(resp) = resp.response {
             return Ok(resp);
         }
-        return Err(ApiError::VehicleUnavailable);
+        return Err(Error::VehicleUnavailable);
     }
 
-    pub async fn wake_up(&self, id: i64) -> Result<VehicleData, ApiError> {
-        let url = format!("{}/api/1/vehicles/{id}/wake_up", self.conf.api_root);
+    pub async fn wake_up(&self, id: i64) -> Result<VehicleData, Error> {
         #[derive(Debug, Deserialize)]
         struct XResponse {
             response: VehicleData,
         }
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(url)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.token.access_token),
-            )
+        let resp = self
+            .make_api_request_builder(&format!("/api/1/vehicles/{id}/wake_up"))
+            .await
             .send()
             .await?
             .json::<XResponse>()
@@ -391,43 +265,52 @@ impl ApiClient {
         Ok(resp.response)
     }
 
+    pub async fn make_ws_connect_message(
+        vehicle_id: i64,
+        token: &Arc<Mutex<TokenState>>,
+    ) -> ConnectMessage {
+        let access_token = {
+            let t = token.lock().await;
+            t.token.access_token.clone()
+        };
+        ConnectMessage {
+            msg_type:"data:subscribe_oauth".to_string(),
+            token: access_token,
+            value:"speed,odometer,soc,elevation,est_heading,est_lat,est_lng,power,shift_state,range,est_range,heading".to_string(),
+            tag: format!("{vehicle_id}")
+        }
+    }
+
+    pub async fn prepare_stream(
+        vehicle_id: i64,
+        token: &Arc<Mutex<TokenState>>,
+    ) -> Result<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        Error,
+    > {
+        let (stream_path, is_token_valid) = {
+            let t = token.lock().await;
+            (t.conf.stream_path.clone(), t.is_valid())
+        };
+        if !is_token_valid {
+            return Err(Error::AccessTokenExpired);
+        }
+        let connect_message = ApiClient::make_ws_connect_message(vehicle_id, token).await;
+        let json = serde_json::to_string(&connect_message).unwrap();
+        let (mut ws_stream, _) =
+            connect_async_tls_with_config(&stream_path, None, true, None).await?;
+        ws_stream.send(Message::text(json.clone())).await.unwrap();
+        Ok(ws_stream)
+    }
+
     pub async fn stream(
         &self,
         vehicle_id: i64,
         output: &tokio::sync::mpsc::Sender<DrivingState>,
-    ) -> Result<(), ApiError> {
-        use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::{connect_async_tls_with_config, tungstenite::protocol::Message};
-        #[derive(Debug, Serialize)]
-        struct ConnectMessage {
-            msg_type: String,
-            token: String,
-            value: String,
-            tag: String,
-        }
-        let connect_message = ConnectMessage {
-            msg_type:"data:subscribe_oauth".to_string(),
-            token: self.token.access_token.clone(),
-            value:"speed,odometer,soc,elevation,est_heading,est_lat,est_lng,power,shift_state,range,est_range,heading".to_string(),
-            tag: format!("{vehicle_id}")
-        };
-        let json = serde_json::to_string(&connect_message).unwrap();
-        let (mut ws_stream, _) = connect_async_tls_with_config(&self.conf.stream_path, None, None)
-            .await
-            .unwrap();
-        ws_stream.send(Message::text(json.clone())).await.unwrap();
-        // ws_stream.send(Message::Ping).await.unwrap();
-        // tokio::spawn(async {
-        //     ws_stream.send(Message::Ping(())).await.unwrap();
-        //     tokio::time::sleep(tokio::time::Duration::from_millis(10000)).await;
-        // });
-        #[derive(Debug, Deserialize, Serialize)]
-        struct StreamMessage {
-            msg_type: String,
-            tag: Option<String>,
-            value: Option<String>,
-            error_type: Option<String>,
-        }
+    ) -> Result<(), Error> {
+        let mut ws_stream = ApiClient::prepare_stream(vehicle_id, &self.token).await?;
         let log_path = format!(
             ".cache/{}/logs/{}.log",
             vehicle_id,
@@ -477,22 +360,26 @@ impl ApiClient {
                                 f.write(json.as_bytes()).unwrap();
                                 f.write(b"\r\n").unwrap();
                                 if let Err(_e) = output.send(update).await {
-                                    return Err(ApiError::LocalChannelClosed);
+                                    return Err(Error::LocalChannelClosed);
                                 }
                             }
                             "data:error" => {
                                 if msg.error_type.is_some() {
                                     match msg.error_type.as_ref().unwrap().as_str() {
                                         "vehicle_disconnected" => {
-                                            ws_stream
-                                                .send(Message::text(json.clone()))
-                                                .await
-                                                .unwrap();
+                                            // let connect_message =
+                                            //     self.make_ws_connect_message(vehicle_id).await;
+                                            // let json =
+                                            //     serde_json::to_string(&connect_message).unwrap();
+                                            // ws_stream
+                                            //     .send(Message::text(json.clone()))
+                                            //     .await
+                                            //     .unwrap();
                                         }
                                         "vehicle_error" => {
                                             if let Some(value) = &msg.value {
                                                 if value.contains("Vehicle is offline") {
-                                                    return Err(ApiError::VehicleOffline);
+                                                    return Err(Error::VehicleOffline);
                                                 }
                                             }
                                         }
@@ -501,7 +388,7 @@ impl ApiClient {
                                                 if value.contains("Can't validate token.")
                                                     || value.contains("unauthorized")
                                                 {
-                                                    return Err(ApiError::Unauthorized);
+                                                    return Err(Error::Unauthorized);
                                                 }
                                             }
                                         }
@@ -522,13 +409,29 @@ impl ApiClient {
                     }
                 }
                 Err(_e) => {
-                    return Err(ApiError::StreamWebSocketClosed);
+                    return Err(Error::StreamWebSocketClosed);
                 }
             }
         }
 
         Ok(())
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConnectMessage {
+    pub msg_type: String,
+    pub token: String,
+    pub value: String,
+    pub tag: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StreamMessage {
+    pub msg_type: String,
+    pub tag: Option<String>,
+    pub value: Option<String>,
+    pub error_type: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -594,8 +497,22 @@ pub struct ChargeResponse {
 
 #[cfg(test)]
 mod tests {
+    use base::init_logger;
+
     use super::*;
 
     #[tokio::test]
-    async fn it_works() {}
+    async fn it_works() {
+        init_logger();
+        let url = format!("https://owner-api.vn.cloud.tesla.cn/api/1/vehicles");
+        // let url = "https://auth.tesla.com/oauth2/v3/authorize?client_id=ownerapi&code_challenge=yu9aUhsjkBBC7-ccqYclglsEGadmFArQ4R8jOykUYVA&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fauth.tesla.com%2Fvoid%2Fcallback&response_type=code&scope=openid+email+offline_access&state=ODJiNzQ4ZGZkMTJm";
+        let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+        let hs = resp.headers().clone();
+        for (n, v) in &hs {
+            info!("{n}: {:?}", v);
+        }
+        let status_code = resp.status();
+        let text = resp.text().await.unwrap();
+        info!("{text} status={status_code}");
+    }
 }

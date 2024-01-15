@@ -1,0 +1,13 @@
+syntax = "proto3";
+package base;
+
+import "tesla.proto";
+
+/// 启动配置项
+message AppConfig {
+  string pika_address = 1;
+  string redis_address = 2;
+  int32 http_port = 3;
+  int32 https_port = 4;
+  tesla.ApiConfig api_config = 5;
+}

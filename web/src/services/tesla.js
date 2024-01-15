@@ -25,3 +25,6 @@ export const user_me = () => {
 	return post('/api/tesla/user_me', {})
 }
 
+export const set_api_token = (access_token, refresh_token) => {
+	return post('/api/set_api_token', { access_token, refresh_token })
+}

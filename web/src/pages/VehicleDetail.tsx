@@ -15,6 +15,7 @@ const Track = (props: any) => {
 	const { vehicle_id, drive_state } = props;
 	let a: any[] = [];
 	const [lines, setLines] = useState(a);
+	const [counter, setCounter] = useState(0);
 	useEffect(() => {
 		track(vehicle_id).then(res => {
 			let coords: any[] = [];
@@ -26,7 +27,7 @@ const Track = (props: any) => {
 			}
 		});
 		return () => { };
-	}, [vehicle_id]);
+	}, [vehicle_id, counter]);
 	const getOption = () => {
 		const option = {
 			bmap: {
@@ -58,6 +59,11 @@ const Track = (props: any) => {
 		return (<div></div>);
 	}
 	return <div>
+		<div>
+			<Button type="link" onClick={() => {
+				setCounter(counter + 1);
+			}}>+刷新数据</Button>
+		</div>
 		<ReactEcharts
 			option={getOption()}
 			style={{ height: '880px', }}
@@ -65,24 +71,32 @@ const Track = (props: any) => {
 	</div>
 }
 
+const vehicle_picture = (color: String) => {
+	if (color.toUpperCase().indexOf("BLACK") > 0) {
+		return "https://static-assets.tesla.cn/configurator/compositor?context=design_studio_2&options=$MTY18,$PBSB,$WY19C,$INPB2&view=FRONT34&model=my&size=1920&bkba_opt=2&crop=0,0,0,0&"
+	}
+	return "https://static-assets.tesla.cn/configurator/compositor?context=design_studio_2&options=$MTY13,$PPMR,$WY19B,$INPB0&view=FRONT34&model=my&size=1920&bkba_opt=2&crop=0,0,0,0&";
+}
+
 const Overview = (props: any) => {
-	const { vin, state, vehicle_config, vehicle_state, climate_state, drive_state } = props;
+	const { vin, state, vehicle_config, vehicle_state, climate_state, drive_state, charge_state } = props;
 	let status = state === "online" ? <Badge status="processing" text={state} /> : <Badge status="default" text={state} />;
 	return (<div>
 		<Card>
 			<Row>
 				<Col span={8}>
-					<Image preview={false} src="https://static-assets.tesla.cn/configurator/compositor?context=design_studio_2&options=$MTY13,$PPMR,$WY19B,$INPB0&view=FRONT34&model=my&size=1920&bkba_opt=2&crop=0,0,0,0&"></Image>
+					<Image preview={false} src={vehicle_picture(vehicle_config.exterior_color)}></Image>
 				</Col>
-				<Col span={5}>
+				<Col span={16}>
 					<Descriptions size='small' column={1} bordered contentStyle={{ textAlign: 'right' }}>
 						<Descriptions.Item label="State">{status}</Descriptions.Item>
-						<Descriptions.Item label="Vin">{vin}</Descriptions.Item>
+						<Descriptions.Item label="车架号Vin">{vin}</Descriptions.Item>
 						<Descriptions.Item label="Car Type">{vehicle_config.car_type}</Descriptions.Item>
-						<Descriptions.Item label="Odometer">{(vehicle_state.odometer * 1.6093).toFixed(0)}</Descriptions.Item>
-						<Descriptions.Item label="Inside Temperature">{climate_state.inside_temp} ℃</Descriptions.Item>
-						<Descriptions.Item label="Outside Temperature">{climate_state.outside_temp} ℃</Descriptions.Item>
-						<Descriptions.Item label="Update Time">{moment.unix(drive_state.timestamp / 1000).format('YYYY-MM-DD HH:mm:ss')}</Descriptions.Item>
+						<Descriptions.Item label="里程表">{(vehicle_state.odometer * 1.6093).toFixed(0)}</Descriptions.Item>
+						<Descriptions.Item label="内部温度">{climate_state.inside_temp} ℃</Descriptions.Item>
+						<Descriptions.Item label="外部温度">{climate_state.outside_temp} ℃</Descriptions.Item>
+						<Descriptions.Item label="更新时间">{moment.unix(vehicle_state.timestamp / 1000).format('YYYY-MM-DD HH:mm:ss')}</Descriptions.Item>
+						<Descriptions.Item label="剩余电量">{charge_state.battery_level}%</Descriptions.Item>
 					</Descriptions>
 				</Col>
 			</Row>
@@ -308,9 +322,11 @@ export default () => {
 		vehicle_id: 0,
 		state: "",
 		drive_state: { timestamp: 0, longtitude: 121.553662, latitude: 31.194845 },
-		vehicle_state: { car_version: "", odometer: 0.0 },
-		vehicle_config: { car_type: "" },
-		climate_state: { outside_temp: "", inside_temp: "" }
+		vehicle_state: { car_version: "", odometer: 0.0, vehicle_name: "", timestamp: 0 },
+		vehicle_config: { car_type: "", exterior_color: "SolidBlack" },
+		climate_state: { outside_temp: "", inside_temp: "" },
+		gui_settings: {},
+		charge_state: { battery_level: 0.0 }
 	});
 
 	useEffect(() => {
@@ -322,20 +338,23 @@ export default () => {
 		return () => { };
 	}, [vehicle_id]);
 	return <Spin spinning={loading}>
-		<Tabs style={{ width: "100%" }} defaultActiveKey="overview" onChange={() => { }}>
-			<TabPane tab="概览" key="overview" >
-				<Overview {...vehicleData}></Overview>
-			</TabPane>
-			<TabPane tab="管理" key="management" ></TabPane>
-			<TabPane tab="充电" key="charge" >
-				<HistoryCharges {...vehicleData}></HistoryCharges>
-			</TabPane>
-			<TabPane tab="旅程" key="trip" >
-				<HistoryTrips {...vehicleData}></HistoryTrips>
-			</TabPane>
-			<TabPane tab="足迹" key="track" >
-				<Track {...vehicleData} ></Track>
-			</TabPane>
-		</Tabs>
+		<Card title={vehicleData.vehicle_state.vehicle_name}>
+			<Tabs style={{ width: "100%" }} defaultActiveKey="overview" onChange={() => { }}>
+				<TabPane tab="概览" key="overview" >
+					<Overview {...vehicleData}></Overview>
+				</TabPane>
+				<TabPane tab="管理" key="management" ></TabPane>
+				<TabPane tab="充电" key="charge" >
+					<HistoryCharges {...vehicleData}></HistoryCharges>
+				</TabPane>
+				<TabPane tab="旅程" key="trip" >
+					<HistoryTrips {...vehicleData}></HistoryTrips>
+				</TabPane>
+				<TabPane tab="足迹" key="track" >
+					<Track {...vehicleData} ></Track>
+				</TabPane>
+			</Tabs>
+		</Card>
+
 	</Spin>
 }

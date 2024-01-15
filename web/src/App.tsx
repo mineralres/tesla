@@ -5,6 +5,7 @@ import { BrowserRouter as Router, Switch, Route, } from "react-router-dom";
 import Track from './pages/track/Track';
 import Vehicles from './pages/Vehicles';
 import VehicleDetail from './pages/VehicleDetail';
+import SetApiToken from './pages/SetApiToken';
 import { user_me } from "./services/tesla";
 
 const { Content, Footer, Sider } = Layout;
@@ -58,6 +59,11 @@ export default () => {
                 关于
               </a>
             </Menu.Item>
+            <Menu.Item key="setting:554x33">
+              <a href="/set_api_token">
+                登陆Tesla账户
+              </a>
+            </Menu.Item>
           </Menu>
         </Sider>
         <Layout className="site-layout">
@@ -76,13 +82,15 @@ export default () => {
                 <VehicleDetail></VehicleDetail>
               </Route>
             </Switch>
+            <Route path="/set_api_token">
+              <SetApiToken></SetApiToken>
+            </Route>
           </Content>
           <Footer style={{ textAlign: 'center' }}>
             <a href="https://github.com/mineralres">Tesla api tools ©2023 Created by String</a>
           </Footer>
         </Layout>
       </Layout>
-
     </Router>
   );
 };

@@ -1,0 +1,1 @@
+./target/release/app --config configs/app.json
